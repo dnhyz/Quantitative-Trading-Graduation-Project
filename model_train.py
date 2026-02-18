@@ -1,14 +1,20 @@
 import pandas as pd
 import joblib
+import numpy as np
 from sklearn.feature_selection import RFE
 from sklearn.model_selection import train_test_split
 from xgboost import XGBRegressor
-from config import BASE_DIR, TECH_FEATURE_NUM, FINA_FEATURE_NUM, TEST_SIZE, RANDOM_STATE, STOCK_CODE
-from utils import evaluate_model
+# ===== 关键修复：补全所有需要的导入项 =====
+from config import (
+    BASE_DIR, TECH_FEATURE_NUM, FINA_FEATURE_NUM, 
+    TEST_SIZE, RANDOM_STATE, STOCK_CODE, PREDICT_DAYS,
+    END_DATE  # 新增导入END_DATE变量
+)
+from utils import evaluate_model, plot_multistep_prediction
 
 # ===================== 特征筛选与模型训练 =====================
 def train_tech_model(df_tech, tech_feat_cols):
-    """训练技术指标模型（日级别）"""
+    """训练技术指标模型（升级：拟合趋势+多步预测）"""
     # 特征筛选
     X_tech = df_tech[tech_feat_cols]
     y_tech_close = df_tech["label_close"]
@@ -23,7 +29,7 @@ def train_tech_model(df_tech, tech_feat_cols):
         X_tech_selected, y_tech_close, test_size=TEST_SIZE, random_state=RANDOM_STATE
     )
     
-    # 训练模型
+    # 训练模型（拟合历史趋势）
     model = XGBRegressor(learning_rate=0.1, n_estimators=100, random_state=RANDOM_STATE)
     model.fit(X_train, y_train)
     
@@ -40,13 +46,53 @@ def train_tech_model(df_tech, tech_feat_cols):
     })
     weight_df.to_csv(f"{BASE_DIR}02_models/tech_model/feature_weights.csv", index=False)
     
-    # 预测示例
-    last_pred = model.predict(X_test[-1].reshape(1, -1))[0]
-    print(f"技术模型最后一条测试数据预测值：{last_pred:.2f}，真实值：{y_test.iloc[-1]:.2f}")
+    # ========== 新增：多步预测未来n天收盘价 ==========
+    print(f"\n开始预测未来 {PREDICT_DAYS} 天收盘价...")
+    # 1. 获取最后一组特征（作为预测起点）
+    last_features = X_tech_selected[-1].reshape(1, -1)
+    # 2. 初始化预测结果列表
+    future_predictions = []
+    # 3. 迭代预测未来n天（基于前一天预测结果更新特征，简化版趋势外推）
+    current_features = last_features.copy()
+    for day in range(PREDICT_DAYS):
+        # 预测当日收盘价
+        day_pred = model.predict(current_features)[0]
+        future_predictions.append(day_pred)
+        # 模拟更新特征（核心：用预测值替换close特征，保持其他特征趋势）
+        # 先找到close在特征列表中的位置
+        if 'close' in selected_tech_feats:
+            close_idx = selected_tech_feats.index('close')
+            current_features[0][close_idx] = day_pred
+        # 其他特征按历史趋势小幅波动（模拟市场变化）
+        current_features = current_features * (1 + np.random.normal(0, 0.005, current_features.shape))
+    
+    # 4. 保存未来n天预测结果
+    future_dates = pd.date_range(start=pd.to_datetime(END_DATE), periods=PREDICT_DAYS, freq='D')
+    future_df = pd.DataFrame({
+        "预测日期": future_dates.strftime("%Y%m%d"),
+        "预测收盘价": future_predictions,
+        "预测天数": [f"未来第{i+1}天" for i in range(PREDICT_DAYS)]
+    })
+    future_df.to_csv(f"{BASE_DIR}03_results/fit_results/tech_model_future_{PREDICT_DAYS}d.csv", index=False)
+    
+    # 5. 可视化历史趋势+未来预测
+    plot_multistep_prediction(
+        historical_data=y_tech_close.values,
+        future_preds=future_predictions,
+        model_name="tech_model",
+        predict_days=PREDICT_DAYS,
+        base_dir=BASE_DIR
+    )
+    
+    # 输出预测结果
+    print("\n技术模型未来{}天预测收盘价：".format(PREDICT_DAYS))
+    for i, pred in enumerate(future_predictions):
+        print(f"未来第{i+1}天：{pred:.2f}")
+    
     return model
 
 def train_fina_model(df_fina):
-    """训练基本面指标模型（修复列名错误）"""
+    """训练基本面指标模型（升级：拟合趋势+多步预测）"""
     
     # 检查df_fina的列
     print("df_fina的列名：", df_fina.columns.tolist())
@@ -116,7 +162,49 @@ def train_fina_model(df_fina):
     })
     weight_df.to_csv(f"{BASE_DIR}02_models/fina_model/feature_weights.csv", index=False)
     
-    # 预测示例
-    last_pred = model.predict(X_test[-1].reshape(1, -1))[0]
-    print(f"基本面模型最后一条测试数据预测值：{last_pred:.2f}，真实值：{y_test.iloc[-1]:.2f}")
+    # ========== 新增：多步预测未来n天收盘价 ==========
+    print(f"\n开始预测未来 {PREDICT_DAYS} 天收盘价...")
+    # 1. 获取最后一组特征（作为预测起点）
+    last_features = X_fina_selected[-1].reshape(1, -1)
+    # 2. 初始化预测结果列表
+    future_predictions = []
+    # 3. 迭代预测未来n天
+    current_features = last_features.copy()
+    for day in range(PREDICT_DAYS):
+        # 预测当日收盘价
+        day_pred = model.predict(current_features)[0]
+        future_predictions.append(day_pred)
+        # 模拟更新特征（用预测值替换close，基本面特征按历史均值波动）
+        if 'close' in selected_fina_feats:
+            close_idx = selected_fina_feats.index('close')
+            current_features[0][close_idx] = day_pred
+        # 基本面特征小幅波动（模拟财报数据变化）
+        for feat in ['pe', 'roe']:
+            if feat in selected_fina_feats:
+                feat_idx = selected_fina_feats.index(feat)
+                current_features[0][feat_idx] *= (1 + np.random.normal(0, 0.01, 1)[0])
+    
+    # 4. 保存未来n天预测结果
+    future_dates = pd.date_range(start=pd.to_datetime(END_DATE), periods=PREDICT_DAYS, freq='D')
+    future_df = pd.DataFrame({
+        "预测日期": future_dates.strftime("%Y%m%d"),
+        "预测收盘价": future_predictions,
+        "预测天数": [f"未来第{i+1}天" for i in range(PREDICT_DAYS)]
+    })
+    future_df.to_csv(f"{BASE_DIR}03_results/fit_results/fina_model_future_{PREDICT_DAYS}d.csv", index=False)
+    
+    # 5. 可视化历史趋势+未来预测
+    plot_multistep_prediction(
+        historical_data=y_fina_close.values,
+        future_preds=future_predictions,
+        model_name="fina_model",
+        predict_days=PREDICT_DAYS,
+        base_dir=BASE_DIR
+    )
+    
+    # 输出预测结果
+    print("\n基本面模型未来{}天预测收盘价：".format(PREDICT_DAYS))
+    for i, pred in enumerate(future_predictions):
+        print(f"未来第{i+1}天：{pred:.2f}")
+    
     return model
