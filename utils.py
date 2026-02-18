@@ -52,3 +52,37 @@ def evaluate_model(y_true, y_pred, model_name, save_path, base_dir):
     plt.savefig(f"{base_dir}05_plots/fit_plots/{model_name}_fit_plot.png")
     plt.close()
     return mse, r2
+
+# ===================== 新增：多步预测可视化函数 =====================
+def plot_multistep_prediction(historical_data, future_preds, model_name, predict_days, base_dir):
+    """绘制历史趋势+未来n天预测"""
+    plt.rcParams['font.sans-serif'] = ['SimHei']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    # 取最后100条历史数据（可视化更清晰）
+    hist_plot = historical_data[-100:]
+    # 构建x轴：历史数据序号 + 未来预测序号
+    x_hist = range(len(hist_plot))
+    x_future = range(len(hist_plot), len(hist_plot) + predict_days)
+    
+    # 绘图
+    plt.figure(figsize=(12, 7))
+    # 历史数据
+    plt.plot(x_hist, hist_plot, color="blue", label="历史收盘价", linewidth=1.5)
+    # 未来预测
+    plt.plot(x_future, future_preds, color="red", label=f"未来{predict_days}天预测", 
+             linestyle="--", marker="o", markersize=4)
+    # 分割线（历史/未来）
+    plt.axvline(x=len(hist_plot)-1, color="gray", linestyle=":", label="历史/未来分割线")
+    
+    # 图表样式
+    plt.title(f"{model_name} - 历史收盘价趋势 + 未来{predict_days}天预测", fontsize=14)
+    plt.xlabel("时间序列（最后100条历史数据 + 未来预测）", fontsize=12)
+    plt.ylabel("收盘价（元）", fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=10)
+    
+    # 保存图片
+    plt.savefig(f"{base_dir}05_plots/fit_plots/{model_name}_future_{predict_days}d_plot.png", 
+                dpi=300, bbox_inches='tight')
+    plt.close()
