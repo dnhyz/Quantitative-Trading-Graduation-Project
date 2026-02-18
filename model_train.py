@@ -1,0 +1,122 @@
+import pandas as pd
+import joblib
+from sklearn.feature_selection import RFE
+from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
+from config import BASE_DIR, TECH_FEATURE_NUM, FINA_FEATURE_NUM, TEST_SIZE, RANDOM_STATE, STOCK_CODE
+from utils import evaluate_model
+
+# ===================== 特征筛选与模型训练 =====================
+def train_tech_model(df_tech, tech_feat_cols):
+    """训练技术指标模型（日级别）"""
+    # 特征筛选
+    X_tech = df_tech[tech_feat_cols]
+    y_tech_close = df_tech["label_close"]
+    rfe_tech = RFE(estimator=XGBRegressor(), n_features_to_select=TECH_FEATURE_NUM)
+    X_tech_selected = rfe_tech.fit_transform(X_tech, y_tech_close)
+    # 筛选后的特征名
+    selected_tech_feats = [tech_feat_cols[i] for i in range(len(tech_feat_cols)) if rfe_tech.support_[i]]
+    print(f"筛选后的技术特征：{selected_tech_feats}")
+    
+    # 划分训练集/测试集
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_tech_selected, y_tech_close, test_size=TEST_SIZE, random_state=RANDOM_STATE
+    )
+    
+    # 训练模型
+    model = XGBRegressor(learning_rate=0.1, n_estimators=100, random_state=RANDOM_STATE)
+    model.fit(X_train, y_train)
+    
+    # 预测与评估
+    y_pred = model.predict(X_test)
+    mse, r2 = evaluate_model(y_test, y_pred, "tech_model", f"{BASE_DIR}03_results/fit_results", BASE_DIR)
+    print(f"\n技术模型评估 - MSE: {mse:.2f}, R²: {r2:.2f}")
+    
+    # 保存模型和特征权重
+    joblib.dump(model, f"{BASE_DIR}02_models/tech_model/xgb_tech_model.pkl")
+    weight_df = pd.DataFrame({
+        "feature": selected_tech_feats,
+        "weight": model.feature_importances_
+    })
+    weight_df.to_csv(f"{BASE_DIR}02_models/tech_model/feature_weights.csv", index=False)
+    
+    # 预测示例
+    last_pred = model.predict(X_test[-1].reshape(1, -1))[0]
+    print(f"技术模型最后一条测试数据预测值：{last_pred:.2f}，真实值：{y_test.iloc[-1]:.2f}")
+    return model
+
+def train_fina_model(df_fina):
+    """训练基本面指标模型（修复列名错误）"""
+    
+    # 检查df_fina的列
+    print("df_fina的列名：", df_fina.columns.tolist())
+    
+    # ===== 修复：根据实际存在的列名调整 =====
+    # 找出实际存在的列
+    available_cols = df_fina.columns.tolist()
+    
+    # 基础价格特征（这些应该都有）
+    price_cols = [col for col in ['open', 'close', 'high', 'low', 'vol'] if col in available_cols]
+    
+    # 基本面特征（可能存在的列）
+    fina_cols = []
+    for col in ['pe', 'roe', 'pcf', 'ps']:
+        if col in available_cols:
+            fina_cols.append(col)
+    
+    # 如果没有pcf和ps，就用pe和roe代替
+    if len(fina_cols) < 2:
+        print("提示：基本面特征较少，将使用所有可用特征")
+        fina_cols = [col for col in ['pe', 'roe'] if col in available_cols]
+    
+    # 组合所有特征列
+    fina_feat_cols = price_cols + fina_cols
+    print(f"使用的特征列：{fina_feat_cols}")
+    
+    # 过滤缺失值
+    df_fina = df_fina.dropna(subset=fina_feat_cols + ['label_close'])
+    
+    if df_fina.empty:
+        print("基本面数据不足，跳过基本面模型训练")
+        return None
+    
+    # 特征筛选
+    X_fina = df_fina[fina_feat_cols]
+    y_fina_close = df_fina["label_close"]
+    
+    # 确保n_features_to_select不超过实际特征数
+    n_select = min(FINA_FEATURE_NUM, len(fina_feat_cols))
+    
+    rfe_fina = RFE(estimator=XGBRegressor(), n_features_to_select=n_select)
+    X_fina_selected = rfe_fina.fit_transform(X_fina, y_fina_close)
+    
+    # 筛选后的特征名
+    selected_fina_feats = [fina_feat_cols[i] for i in range(len(fina_feat_cols)) if rfe_fina.support_[i]]
+    print(f"\n筛选后的基本面特征：{selected_fina_feats}")
+    
+    # 划分训练集/测试集
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_fina_selected, y_fina_close, test_size=TEST_SIZE, random_state=RANDOM_STATE
+    )
+    
+    # 训练模型
+    model = XGBRegressor(learning_rate=0.1, n_estimators=100, random_state=RANDOM_STATE)
+    model.fit(X_train, y_train)
+    
+    # 预测与评估
+    y_pred = model.predict(X_test)
+    mse, r2 = evaluate_model(y_test, y_pred, "fina_model", f"{BASE_DIR}03_results/fit_results", BASE_DIR)
+    print(f"基本面模型评估 - MSE: {mse:.2f}, R²: {r2:.2f}")
+    
+    # 保存模型和特征权重
+    joblib.dump(model, f"{BASE_DIR}02_models/fina_model/xgb_fina_model.pkl")
+    weight_df = pd.DataFrame({
+        "feature": selected_fina_feats,
+        "weight": model.feature_importances_
+    })
+    weight_df.to_csv(f"{BASE_DIR}02_models/fina_model/feature_weights.csv", index=False)
+    
+    # 预测示例
+    last_pred = model.predict(X_test[-1].reshape(1, -1))[0]
+    print(f"基本面模型最后一条测试数据预测值：{last_pred:.2f}，真实值：{y_test.iloc[-1]:.2f}")
+    return model
